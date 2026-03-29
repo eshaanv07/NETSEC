@@ -1,16 +1,45 @@
 import socket
 import threading
 import json
+from cryptography.fernet import Fernet
 
 lock = threading.Lock()
 
+key=b'pabmI22uc-Z-GQN6c3nsqYVSLBsoCTI-Xc_OgygMbo0='
+cipher=Fernet(key)
+
+def recv_exact(conn,n):
+    
+    buf=b""
+    while len(buf)<n:
+        chunk=conn.recv(n-len(buf))
+        if not chunk:
+            return b""
+        buf+=chunk
+    return buf
+
+def send_msg(conn,plaintext:str):
+    encrypted_msg=cipher.encrypt(plaintext.encode())
+    length=len(encrypted_msg).to_bytes(4,byteorder='big')
+    conn.sendall(length+encrypted_msg)
+    
+def recv_msg(conn)->str:
+    raw_len=recv_exact(conn,4)
+    if not raw_len:
+        return ""
+    msg_len=int.from_bytes(raw_len,byteorder='big')
+    data=recv_exact(conn,msg_len)
+    if not data:
+        return ""
+    return cipher.decrypt(data).decode().strip()
+
 
 def get_uname(conn,client_list, status_list):
-    uname=conn.recv(4096).decode().strip()
+    uname=recv_msg(conn)
     with lock:
         client_list[uname]=conn
         status_list[uname]="AVAL"
-    conn.sendall(f"OK|Welcome {uname}".encode())
+    send_msg(conn,f"OK|Welcome {uname}")
     return uname
 
 
@@ -26,7 +55,7 @@ def disconnect_user(uname,client_list,connection_list,status_list,notify_partner
 
     if notify_partner and partner and partner in client_list:
         try:
-            client_list[partner].sendall("ENDCONN|Your partner disconnected.".encode())
+            send_msg(client_list[partner],"ENDCONN|Your partner disconnected")
         except OSError:
             pass
 
@@ -37,14 +66,12 @@ def master_func(conn,client_list,connection_list,status_list,pending_list):
 
     try:
         while True:
-            rawdata=conn.recv(4096)
+            msg=recv_msg(conn)
 
-            if not rawdata:
+            if not msg:
                 disconnect_user(uname,client_list,connection_list,status_list,notify_partner=True)
                 print(f"[-] '{uname}' disconnected abruptly")
                 break
-
-            msg = rawdata.decode().strip()
 
             if msg.startswith("EXIT|"):
                 disconnect_user(uname,client_list,connection_list,status_list,notify_partner=True)
@@ -61,14 +88,14 @@ def master_func(conn,client_list,connection_list,status_list,pending_list):
                             status_list[partner]="AVAL"
                 if partner and partner in client_list:
                     try:
-                        client_list[partner].sendall("ENDCONN|Your partner ended the chat.".encode())
+                        send_msg(client_list[partner],"ENDCONN|Your partner ended the chat")
                     except OSError:
                         pass
 
             elif msg.startswith("SHOW|"):
                 with lock:
                     snapshot=dict(status_list)
-                conn.sendall(("SHOWANS|" + json.dumps(snapshot)).encode())
+                send_msg(conn,"SHOWANS|"+json.dumps(snapshot))
 
             elif msg.startswith("STAT|"):
                 new_status=msg[5:]
@@ -79,7 +106,7 @@ def master_func(conn,client_list,connection_list,status_list,pending_list):
             elif msg.startswith("REQ|"):
                 other = msg[4:]
                 with lock:
-                    can_req = (
+                    can_req=(
                         other in client_list
                         and status_list.get(uname)=="AVAL"
                         and status_list.get(other)=="AVAL"
@@ -90,7 +117,7 @@ def master_func(conn,client_list,connection_list,status_list,pending_list):
 
                 if can_req:
                     try:
-                        client_list[other].sendall(f"REQ|{uname} wants to connect. Accept?".encode())
+                        send_msg(client_list[other],f"REQ|{uname} wants to connect. Accept?")
                     except OSError:
                         with lock:
                             status_list[uname]="AVAL"
@@ -115,7 +142,7 @@ def master_func(conn,client_list,connection_list,status_list,pending_list):
 
                 if can_accept:
                     try:
-                        client_list[other].sendall(f"ACCEPT|{uname} accepted your request".encode())
+                        send_msg(client_list[other],f"ACCEPT|{uname} accepted your request")
                     except OSError:
                         pass
                     print(f"[+] '{uname}' and '{other}' are now connected")
@@ -134,7 +161,7 @@ def master_func(conn,client_list,connection_list,status_list,pending_list):
 
                 if can_reject:
                     try:
-                        client_list[other].sendall(f"REJECT|{uname} rejected your request.".encode())
+                        send_msg(client_list[other],f"REJECT|{uname} rejected your request")
                     except OSError:
                         pass
 
@@ -144,7 +171,7 @@ def master_func(conn,client_list,connection_list,status_list,pending_list):
                     partner_sock=client_list.get(partner) if partner else None
                 if partner_sock:
                     try:
-                        partner_sock.sendall(msg.encode())
+                        send_msg(partner_sock,msg)
                     except OSError:
                         pass
 

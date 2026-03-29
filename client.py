@@ -1,15 +1,44 @@
 import socket
 import threading
 import json
+from cryptography.fernet import Fernet
+
+key=b'pabmI22uc-Z-GQN6c3nsqYVSLBsoCTI-Xc_OgygMbo0='
+cipher=Fernet(key)
 
 SERVER_IP="172.16.141.17"
 SERVER_PORT=5100
 
+def recv_exact(conn,n):
+    
+    buf=b""
+    while len(buf)<n:
+        chunk=conn.recv(n-len(buf))
+        if not chunk:
+            return b""
+        buf+=chunk
+    return buf
 
-def recv_msg(client):
+def send_msg(conn,plaintext:str):
+    encrypted_msg=cipher.encrypt(plaintext.encode())
+    length=len(encrypted_msg).to_bytes(4,byteorder='big')
+    conn.sendall(length+encrypted_msg)
+    
+def recv_msg(conn)->str:
+    raw_len=recv_exact(conn,4)
+    if not raw_len:
+        return ""
+    msg_len=int.from_bytes(raw_len,byteorder='big')
+    data=recv_exact(conn,msg_len)
+    if not data:
+        return ""
+    return cipher.decrypt(data).decode().strip()
+
+def recv_loop(client):
     while True:
         try:
-            msg=client.recv(4096).decode().strip()
+            msg=recv_msg(client)
+            
             if not msg:
                 print("\n[!] Disconnected from server.")
                 break
@@ -47,23 +76,16 @@ def recv_msg(client):
             break
 
 
-def send(client,msg):
-    try:
-        client.sendall(msg.encode())
-    except OSError:
-        print("[!] Failed to send message.")
-
-
 
 
 client=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
 client.connect((SERVER_IP,SERVER_PORT))
 
-recv_thread=threading.Thread(target=recv_msg, args=(client,), daemon=True)
+recv_thread=threading.Thread(target=recv_loop,args=(client,),daemon=True)
 recv_thread.start()
 
 uname=input("Username: ").strip()
-send(client,uname)
+send_msg(client,uname)
 
 print("\nCommands:")
 print("  SHOW|              -> list online users")
@@ -78,19 +100,19 @@ print("  <anything else>    -> send a message to your partner\n")
 while True:
     try:
         msg=input("> ").strip()
-    except (EOFError,KeyboardInterrupt):
-        send(client,"EXIT|")
+    except(EOFError,KeyboardInterrupt):
+        send_msg(client,"EXIT|")
         break
 
     if not msg:
         continue
 
     if msg.startswith("EXIT|"):
-        send(client,msg)
+        send_msg(client,msg)
         break
     elif any(msg.startswith(p) for p in ("ENDCONN|","SHOW|","STAT|","REQ|","ACCEPT|","REJECT|")):
-        send(client,msg)
+        send_msg(client,msg)
     else:
-        send(client,"SEND|" + msg)
+        send_msg(client,"SEND|"+msg)
 
 client.close()
