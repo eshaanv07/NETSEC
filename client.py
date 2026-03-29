@@ -2,63 +2,95 @@ import socket
 import threading
 import json
 
+SERVER_IP="172.16.141.17"
+SERVER_PORT=5100
+
+
 def recv_msg(client):
     while True:
         try:
-            msg=client.recv(4096).decode()
-            if msg.startswith("SEND|"):
-                print("partner:",msg[5:])
-                
+            msg=client.recv(4096).decode().strip()
+            if not msg:
+                print("\n[!] Disconnected from server.")
+                break
+
+            if msg.startswith("OK|"):
+                print(f"[Server] {msg[3:]}")
+
+            elif msg.startswith("SEND|"):
+                print(f"Partner: {msg[5:]}")
+
             elif msg.startswith("SHOWANS|"):
-                msg=msg[8:]
-                reqdata=json.loads(msg)
-                print(reqdata)
-                
+                users=json.loads(msg[8:])
+                print("\n── Online Users ──")
+                for user, status in users.items():
+                    print(f"  {user}: {status}")
+                print("──────────────────")
+
             elif msg.startswith("REQ|"):
-                print(msg[4:])
-        except:
+                print(f"\n[Request] {msg[4:]}")
+                print("  Reply with ACCEPT|<username> or REJECT|<username>")
+
+            elif msg.startswith("ACCEPT|"):
+                print(f"\n[Connected] {msg[7:]}")
+
+            elif msg.startswith("REJECT|"):
+                print(f"\n[Rejected] {msg[7:]}")
+
+            elif msg.startswith("ENDCONN|"):
+                print(f"\n[Chat ended] {msg[8:]}")
+
+            else:
+                print(f"[Server] {msg}")
+
+        except OSError:
             break
-        
+
+
+def send(client,msg):
+    try:
+        client.sendall(msg.encode())
+    except OSError:
+        print("[!] Failed to send message.")
+
+
+
+
 client=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-client.connect(('172.16.141.17',5100))
+client.connect((SERVER_IP,SERVER_PORT))
 
-t2=threading.Thread(target=recv_msg,args=(client,),daemon=True)
-t2.start() 
+recv_thread=threading.Thread(target=recv_msg, args=(client,), daemon=True)
+recv_thread.start()
 
-uname=input("Username:")
-client.send(uname.encode())
+uname=input("Username: ").strip()
+send(client,uname)
+
+print("\nCommands:")
+print("  SHOW|              -> list online users")
+print("  STAT|AVAL or DND   -> change your status")
+print("  REQ|<user>         -> request to chat")
+print("  ACCEPT|<user>      -> accept a chat request")
+print("  REJECT|<user>      -> reject a chat request")
+print("  ENDCONN|           -> end current chat")
+print("  EXIT|              -> quit")
+print("  <anything else>    -> send a message to your partner\n")
 
 while True:
-    msg=input(">")
-    
-    if msg.startswith("EXIT|"):
-        client.send(msg.encode())
+    try:
+        msg=input("> ").strip()
+    except (EOFError,KeyboardInterrupt):
+        send(client,"EXIT|")
         break
-    
-    elif msg.startswith("ENDCONN|"):
-            client.send(msg.encode())
-            
-    elif msg.startswith("CONN|"):
-        client.send(msg.encode()) 
-        
-    elif msg.startswith("SHOW|"):
-        client.send(msg.encode())
-        
-    elif msg.startswith("STAT|"):
-        client.send(msg.encode())
-        
-    elif msg.startswith("REQ|"):
-        client.send(msg.encode())
-        
-    elif msg.startswith("ACCEPT|"):
-        client.send(msg.encode())
-        
-    elif msg.startswith("REJECT|"):
-        client.send(msg.encode())
-        
-    else:
-        client.send(("SEND|"+msg).encode())
-client.close()
 
-    
-     
+    if not msg:
+        continue
+
+    if msg.startswith("EXIT|"):
+        send(client,msg)
+        break
+    elif any(msg.startswith(p) for p in ("ENDCONN|","SHOW|","STAT|","REQ|","ACCEPT|","REJECT|")):
+        send(client,msg)
+    else:
+        send(client,"SEND|" + msg)
+
+client.close()
