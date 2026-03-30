@@ -2,29 +2,28 @@ import socket
 import threading
 import json
 from cryptography.fernet import Fernet
-
-key=b'pabmI22uc-Z-GQN6c3nsqYVSLBsoCTI-Xc_OgygMbo0='
-cipher=Fernet(key)
-
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import serialization,hashes
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+    
 SERVER_IP="172.16.141.17"
 SERVER_PORT=5100
 
 def recv_exact(conn,n):
-    
-    buf=b""
-    while len(buf)<n:
-        chunk=conn.recv(n-len(buf))
+    buffer=b""
+    while len(buffer)<n:
+        chunk=conn.recv(n-len(buffer))
         if not chunk:
             return b""
-        buf+=chunk
-    return buf
+        buffer+=chunk
+    return buffer
 
-def send_msg(conn,plaintext:str):
+def send_msg(conn,cipher,plaintext:str):
     encrypted_msg=cipher.encrypt(plaintext.encode())
     length=len(encrypted_msg).to_bytes(4,byteorder='big')
     conn.sendall(length+encrypted_msg)
     
-def recv_msg(conn)->str:
+def recv_msg(conn,cipher)->str:
     raw_len=recv_exact(conn,4)
     if not raw_len:
         return ""
@@ -33,44 +32,74 @@ def recv_msg(conn)->str:
     if not data:
         return ""
     return cipher.decrypt(data).decode().strip()
+    
+def perform_handshake(client):
+    
+    key_len=int.from_bytes(recv_exact(client,4),byteorder='big')
+    public_key_bytes=recv_exact(client,key_len)
+    public_key=load_pem_public_key(public_key_bytes)
+    
+    fernet_key=Fernet.generate_key()
+    cipher=Fernet(fernet_key)
+    
+    encrypted_fernet_key=public_key.encrypt(
+        fernet_key,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+    
+    client.sendall(len(encrypted_fernet_key).to_bytes(4,byteorder='big'))
+    client.sendall(encrypted_fernet_key)
+    
+    return cipher
 
-def recv_loop(client):
+def print_msg(msg: str):
+    print(f"\r{msg}")
+    print("\r> ",end="",flush=True)
+
+def recv_loop(client,cipher):
     while True:
         try:
-            msg=recv_msg(client)
+            msg=recv_msg(client,cipher)
             
             if not msg:
-                print("\n[!] Disconnected from server.")
+                print_msg("[DISCONNECTED] Disconnected from server\n")
                 break
 
             if msg.startswith("OK|"):
-                print(f"[Server] {msg[3:]}")
+                print_msg(f"[SERVER] {msg[3:]}")
 
             elif msg.startswith("SEND|"):
-                print(f"Partner: {msg[5:]}")
+                print_msg(f"Partner: {msg[5:]}")
 
             elif msg.startswith("SHOWANS|"):
                 users=json.loads(msg[8:])
-                print("\n── Online Users ──")
-                for user, status in users.items():
-                    print(f"  {user}: {status}")
+                print("\nOnline Users:")
+                for user,status in users.items():
+                    print(f"{user} : {status}")
                 print("──────────────────")
 
             elif msg.startswith("REQ|"):
-                print(f"\n[Request] {msg[4:]}")
-                print("  Reply with ACCEPT|<username> or REJECT|<username>")
+                print_msg(f"[Request] {msg[4:]}\n")
+                print_msg("Reply-->ACCEPT|<username> or REJECT|<username>")
+                
+            elif msg.startswith("REQSENT|"):
+                print_msg(f"[SERVER] {msg[8:]}\n")
 
             elif msg.startswith("ACCEPT|"):
-                print(f"\n[Connected] {msg[7:]}")
+                print_msg(f"[CONNECTED] {msg[7:]}\n")
 
             elif msg.startswith("REJECT|"):
-                print(f"\n[Rejected] {msg[7:]}")
+                print_msg(f"[REJECTED] {msg[7:]}\n")
 
             elif msg.startswith("ENDCONN|"):
-                print(f"\n[Chat ended] {msg[8:]}")
+                print_msg(f"[CHAT ENDED] {msg[8:]}\n")
 
             else:
-                print(f"[Server] {msg}")
+                print_msg(f"[DEBUG] {msg}")
 
         except OSError:
             break
@@ -81,38 +110,40 @@ def recv_loop(client):
 client=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
 client.connect((SERVER_IP,SERVER_PORT))
 
-recv_thread=threading.Thread(target=recv_loop,args=(client,),daemon=True)
+cipher=perform_handshake(client)
+
+recv_thread=threading.Thread(target=recv_loop,args=(client,cipher),daemon=True)
 recv_thread.start()
 
 uname=input("Username: ").strip()
-send_msg(client,uname)
+send_msg(client,cipher,uname)
 
 print("\nCommands:")
-print("  SHOW|              -> list online users")
-print("  STAT|AVAL or DND   -> change your status")
-print("  REQ|<user>         -> request to chat")
-print("  ACCEPT|<user>      -> accept a chat request")
-print("  REJECT|<user>      -> reject a chat request")
-print("  ENDCONN|           -> end current chat")
-print("  EXIT|              -> quit")
-print("  <anything else>    -> send a message to your partner\n")
+print("SHOW|              -> list online users")
+print("STAT|AVAL or DND   -> change your status to AVAL or DND")
+print("REQ|<user>         -> request to chat")
+print("ACCEPT|<user>      -> accept a chat request")
+print("REJECT|<user>      -> reject a chat request")
+print("ENDCONN|           -> end current chat")
+print("EXIT|              -> quit")
+print("<anything else>    -> send a message to your partner\n")
 
 while True:
     try:
         msg=input("> ").strip()
     except(EOFError,KeyboardInterrupt):
-        send_msg(client,"EXIT|")
+        send_msg(client,cipher,"EXIT|")
         break
 
     if not msg:
         continue
 
     if msg.startswith("EXIT|"):
-        send_msg(client,msg)
+        send_msg(client,cipher,msg)
         break
     elif any(msg.startswith(p) for p in ("ENDCONN|","SHOW|","STAT|","REQ|","ACCEPT|","REJECT|")):
-        send_msg(client,msg)
+        send_msg(client,cipher,msg)
     else:
-        send_msg(client,"SEND|"+msg)
+        send_msg(client,cipher,"SEND|"+msg)
 
 client.close()
