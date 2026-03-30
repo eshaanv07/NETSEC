@@ -58,6 +58,11 @@ def get_uname_cipher(conn,client_list,status_list):
     
     uname=recv_msg(conn,cipher)
     with lock:
+        if uname in client_list:
+            send_msg(conn,cipher,"ERROR|Username is already taken")
+            conn.close()
+            return
+        
         client_list[uname]=(conn,cipher)
         status_list[uname]="AVAL"
     send_msg(conn,cipher,f"OK|Welcome {uname}")
