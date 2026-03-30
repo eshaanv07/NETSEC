@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives.serialization import load_pem_public_key
 SERVER_IP="172.16.141.17"
 SERVER_PORT=5100
 
+#receives exact n bytes from conn----data received is encrypted
 def recv_exact(conn,n):
     buffer=b""
     while len(buffer)<n:
@@ -18,11 +19,13 @@ def recv_exact(conn,n):
         buffer+=chunk
     return buffer
 
+#sends encrypted string----data is encrypted in func
 def send_msg(conn,cipher,plaintext:str):
     encrypted_msg=cipher.encrypt(plaintext.encode())
     length=len(encrypted_msg).to_bytes(4,byteorder='big')
     conn.sendall(length+encrypted_msg)
     
+#receives string----data is decrypted in func     
 def recv_msg(conn,cipher)->str:
     raw_len=recv_exact(conn,4)
     if not raw_len:
@@ -33,6 +36,7 @@ def recv_msg(conn,cipher)->str:
         return ""
     return cipher.decrypt(data).decode().strip()
     
+#exchnages fernet key with server   
 def perform_handshake(client):
     
     key_len=int.from_bytes(recv_exact(client,4),byteorder='big')
@@ -56,10 +60,12 @@ def perform_handshake(client):
     
     return cipher
 
+#handle proper printing of >
 def print_msg(msg: str):
     print(f"\r{msg}")
     print("\r> ",end="",flush=True)
 
+#main data receiving loop
 def recv_loop(client,cipher):
     while True:
         try:
@@ -97,6 +103,9 @@ def recv_loop(client,cipher):
 
             elif msg.startswith("ENDCONN|"):
                 print_msg(f"[CHAT ENDED] {msg[8:]}\n")
+                
+            elif msg.startswith("ERROR|"):
+                print_msg(f"[ERROR] {msg[6:]}\n")
 
             else:
                 print_msg(f"[DEBUG] {msg}")
@@ -105,6 +114,7 @@ def recv_loop(client,cipher):
             break
 
 
+##########################################################################################################
 
 
 client=socket.socket(socket.AF_INET,socket.SOCK_STREAM)

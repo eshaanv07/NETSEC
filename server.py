@@ -11,7 +11,7 @@ private_key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
 public_key=private_key.public_key()
 public_key_bytes=public_key.public_bytes(encoding=serialization.Encoding.PEM,format=serialization.PublicFormat.SubjectPublicKeyInfo)
 
-
+#receives exact n bytes from conn----data received is encrypted
 def recv_exact(conn,n):
     buffer=b""
     while len(buffer)<n:
@@ -21,11 +21,13 @@ def recv_exact(conn,n):
         buffer+=chunk
     return buffer
 
+#sends encrypted string----data is encrypted in func
 def send_msg(conn,cipher,plaintext:str):
     encrypted_msg=cipher.encrypt(plaintext.encode())
     encrypted_msg_length=len(encrypted_msg).to_bytes(4,byteorder='big')
     conn.sendall(encrypted_msg_length+encrypted_msg)
-    
+   
+#receives string----data is decrypted in func  
 def recv_msg(conn,cipher)->str:
     raw_len=recv_exact(conn,4)
     if not raw_len:
@@ -36,8 +38,8 @@ def recv_msg(conn,cipher)->str:
         return ""
     return cipher.decrypt(data).decode().strip()
 
-
-def get_uname(conn,client_list,status_list):
+#returns the username and cipher of fernet key
+def get_uname_cipher(conn,client_list,status_list):
     
     conn.sendall(len(public_key_bytes).to_bytes(4,byteorder='big'))
     conn.sendall(public_key_bytes)
@@ -61,7 +63,7 @@ def get_uname(conn,client_list,status_list):
     send_msg(conn,cipher,f"OK|Welcome {uname}")
     return uname,cipher
 
-
+#handles a disconnecting user
 def disconnect_user(uname,client_list,connection_list,status_list,pending_list,notify_partner=False):
     with lock:
         partner=connection_list.pop(uname,None)
@@ -90,25 +92,28 @@ def disconnect_user(uname,client_list,connection_list,status_list,pending_list,n
         except (KeyError, OSError):
             pass
 
-
+#master function
 def master_func(conn,client_list,connection_list,status_list,pending_list):
-    uname,cipher=get_uname(conn,client_list,status_list)
+    uname,cipher=get_uname_cipher(conn,client_list,status_list)
     print(f"[SERVER] {uname} connected")
 
     try:
         while True:
             msg=recv_msg(conn,cipher)
 
+            #ABRUPT DISCONNECTION FROM SERVER
             if not msg:
                 disconnect_user(uname,client_list,connection_list,status_list,pending_list,notify_partner=True)
                 print(f"[SERVER] {uname} disconnected abruptly")
                 break
-
+            
+            #PROPER DISCONNECTION FROM SERVER
             if msg.startswith("EXIT|"):
                 disconnect_user(uname,client_list,connection_list,status_list,pending_list,notify_partner=True)
                 print(f"[SERVER] {uname} exited")
                 break
-
+            
+            #EXITING CHAT WITH USER
             elif msg.startswith("ENDCONN|"):
                 with lock:
                     partner=connection_list.pop(uname,None)
@@ -124,83 +129,151 @@ def master_func(conn,client_list,connection_list,status_list,pending_list):
                     except (OSError,KeyError):
                         pass
 
+            #DISPLAYING ONLINE USERS          
             elif msg.startswith("SHOW|"):
                 with lock:
                     snapshot=dict(status_list)
                 send_msg(conn,cipher,"SHOWANS|"+json.dumps(snapshot))
 
+            #CHANGING USER STATUS
             elif msg.startswith("STAT|"):
                 new_status=msg[5:]
                 if new_status in ("AVAL","DND"):
                     with lock:
                         status_list[uname]=new_status
+                else:
+                    send_msg(conn,cipher,'ERROR|Choose status from "AVAL" or "DND"')
 
+            #REQQUESTING CONNECTION WITH USER
             elif msg.startswith("REQ|"):
-                other=msg[4:]
-                with lock:
-                    can_req=(
-                        other in client_list
-                        and status_list.get(uname)=="AVAL"
-                        and status_list.get(other)=="AVAL"
-                    )
-                    if can_req:
-                        pending_list[other]=uname
-                        status_list[uname]="PENDING"
+                other=msg[4:].strip()
+                error=None
+                can_req=False
+                
+                if not other:
+                    error="No username specified"
+                    
+                elif other==uname:
+                    error="Cannot chat with yourself"
+                    
+                else:
+                    with lock:
+                        if other not in client_list:
+                            error="User not online"
+                            
+                        elif status_list[other]=="DND":
+                            error="User set to Do Not Disturb"
+                            
+                        elif status_list[other]=="BUSY":
+                            error="User set to BUSY"
+                            
+                        elif status_list[other]=="PENDING":
+                            error="User has a pending request"
+                            
+                        elif status_list[uname]!="AVAL":
+                            error="You cannot make requests currently"
+                        
+                        else:
+                            pending_list[other]=uname
+                            status_list[uname]="PENDING"
+                            can_req=True
 
-                if can_req:
+                if error:
+                    send_msg(conn,cipher,f"ERROR|{error}")
+                    
+                elif can_req:
                     try:
                         other_client,other_cipher=client_list[other]
                         send_msg(other_client,other_cipher,f"REQ|{uname} wants to connect. Accept?")
                         send_msg(conn,cipher,f"REQSENT|Request sent to {other}.")
-                    except OSError:
+                    except (OSError,KeyError):
                         with lock:
                             status_list[uname]="AVAL"
                             pending_list.pop(other,None)
                     print(f"[SERVER] {uname} sent connection request to {other}")
 
+            #ACCEPTING CONNECTION WITH USER
             elif msg.startswith("ACCEPT|"):
-                other=msg[7:]
-                with lock:
-                    can_accept=(
-                        other in client_list
-                        and pending_list.get(uname)==other
-                        and status_list.get(uname)=="AVAL"
-                        and status_list.get(other)=="PENDING"
-                    )
-                    if can_accept:
-                        connection_list[uname]=other
-                        connection_list[other]=uname
-                        status_list[uname]="BUSY"
-                        status_list[other]="BUSY"
-                        pending_list.pop(uname,None)
-
-                if can_accept:
+                other=msg[7:].strip()
+                error=None
+                can_accept=False
+                
+                if not other:
+                    error="No username specified"
+                    
+                elif other==uname:
+                    error="Cannot accept yourself"
+                    
+                else:
+                    with lock:
+                        if other not in client_list:
+                            error="User not online"
+                            
+                        elif pending_list.get(uname)!=other:
+                            error="No pending request from this user"
+                            
+                        elif status_list[uname]!="AVAL":
+                            error="You are not available"
+                            
+                        elif status_list[other]!="PENDING":
+                            error="User is not longer waiting"
+                        
+                        else:
+                            connection_list[uname]=other
+                            connection_list[other]=uname
+                            status_list[uname]="BUSY"
+                            status_list[other]="BUSY"
+                            pending_list.pop(uname,None)
+                            can_accept=True
+                if error:
+                    send_msg(conn,cipher,f"ERROR|{error}")
+                elif can_accept:
                     try:
                         other_client,other_cipher=client_list[other]
                         send_msg(other_client,other_cipher,f"ACCEPT|{uname} accepted your request")
-                    except OSError:
+                    except (KeyError,OSError):
                         pass
                     print(f"[SERVER] {uname} and {other} are connected")
 
+            #REJECTING CONNECTION WITH USER
             elif msg.startswith("REJECT|"):
-                other=msg[7:]
-                with lock:
-                    can_reject=(
-                        other in client_list
-                        and pending_list.get(uname)==other
-                        and status_list.get(other)=="PENDING"
-                    )
-                    if can_reject:
-                        status_list[other]="AVAL"
-                        pending_list.pop(uname,None)
-
-                if can_reject:
+                other=msg[7:].strip()
+                error=None
+                can_reject=False
+                
+                if not other:
+                    error="No username specified"
+                    
+                elif other==uname:
+                    error="Cannot reject yourself"
+                    
+                else:
+                    with lock:
+                        if other not in client_list:
+                            error="User not online"
+                            
+                        elif pending_list.get(uname)!=other:
+                            error="No pending request from this user"
+                            
+                        elif status_list[other]!="PENDING":
+                            error="User is no longer waiting"
+                            
+                        else:
+                            status_list[other]="AVAL"
+                            pending_list.pop(uname,None)
+                            can_reject=True
+                            
+                if error:
+                    send_msg(conn,cipher,f"ERROR|{error}")
+                                
+                elif can_reject:
                     try:
                         other_client,other_cipher=client_list[other]
                         send_msg(other_client,other_cipher,f"REJECT|{uname} rejected your request")
-                    except OSError:
+                    except (KeyError,OSError):
                         pass
 
+            #SENDING MESSAGE
             elif msg.startswith("SEND|"):
                 with lock:
                     partner=connection_list.get(uname)
@@ -209,13 +282,14 @@ def master_func(conn,client_list,connection_list,status_list,pending_list):
                     try:
                         other_client,other_cipher=partner_data
                         send_msg(other_client,other_cipher,msg)
-                    except OSError:
+                    except (KeyError,OSError):
                         pass
 
     finally:
         conn.close()
 
 
+#################################################################################################################
 
 
 client_list={}
@@ -232,9 +306,5 @@ print("[SERVER] Server listening on port 5100")
 while True:
     conn, addr=server.accept()
     print(f"[SERVER] new connection from {addr}")
-    t=threading.Thread(
-        target=master_func,
-        args=(conn, client_list, connection_list, status_list, pending_list),
-        daemon=True,
-    )
-    t.start()
+    thread_master_func=threading.Thread(target=master_func,args=(conn, client_list, connection_list,status_list,pending_list),daemon=True)
+    thread_master_func.start()
