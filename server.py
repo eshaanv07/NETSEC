@@ -70,6 +70,10 @@ def get_uname_cipher(conn,client_list,status_list):
 
 #handles a disconnecting user
 def disconnect_user(uname,client_list,connection_list,status_list,pending_list,notify_partner=False):
+    notify_members=[]
+    partner=None
+    room_name=None
+    
     with lock:
         partner=connection_list.pop(uname,None)
         if partner:
@@ -86,6 +90,20 @@ def disconnect_user(uname,client_list,connection_list,status_list,pending_list,n
             if requester==uname:
                 del pending_list[target]
                 break
+            
+        if uname in user_rooms:
+            room_name=user_rooms.pop(uname)
+            if room_name in chat_rooms:
+                chat_rooms[room_name]["members"].remove(uname)
+                
+                if not chat_rooms[room_name]["members"]:
+                    del chat_rooms[room_name]
+                    room_name=None
+                    
+                else:
+                    if chat_rooms[room_name]["owner"]==uname:
+                        chat_rooms[room_name]["owner"]=chat_rooms[room_name]["members"][0]
+                    notify_members=list(chat_rooms[room_name]["members"])
 
         client_list.pop(uname,None)
         status_list.pop(uname,None)
@@ -96,9 +114,16 @@ def disconnect_user(uname,client_list,connection_list,status_list,pending_list,n
             send_msg(partner_conn,partner_cipher,"ENDCONN|Your partner disconnected.")
         except (KeyError, OSError):
             pass
+        
+    for member in notify_members:
+        try:
+            member_conn,member_cipher=client_list[member]
+            send_msg(member_conn,member_cipher,f"BROADCAST|{uname} has left the room")
+        except (KeyError,OSError):
+            pass
 
 #master function
-def master_func(conn,client_list,connection_list,status_list,pending_list):
+def master_func(conn,client_list,connection_list,status_list,pending_list,chat_rooms,user_rooms):
     uname,cipher=get_uname_cipher(conn,client_list,status_list)
     print(f"[SERVER] {uname} connected")
 
@@ -137,8 +162,11 @@ def master_func(conn,client_list,connection_list,status_list,pending_list):
             #DISPLAYING ONLINE USERS          
             elif msg.startswith("SHOW|"):
                 with lock:
-                    snapshot=dict(status_list)
-                send_msg(conn,cipher,"SHOWANS|"+json.dumps(snapshot))
+                    snapshot1=dict(status_list)
+                    snapshot2=dict(chat_rooms)
+                    
+                send_msg(conn,cipher,"SHOWANSUSER|"+json.dumps(snapshot1))
+                send_msg(conn,cipher,"SHOWANSROOM|"+json.dumps(snapshot2))
 
             #CHANGING USER STATUS
             elif msg.startswith("STAT|"):
@@ -277,17 +305,142 @@ def master_func(conn,client_list,connection_list,status_list,pending_list):
                         send_msg(other_client,other_cipher,f"REJECT|{uname} rejected your request")
                     except (KeyError,OSError):
                         pass
-
+                    
+            #CREATING ROOM
+            elif msg.startswith("CREATEROOM|"):
+                room_name=msg[11:].strip()
+                error=None
+                can_create_room=False
+                
+                if not room_name:
+                    error="Room name not specified"
+                    
+                else:
+                    with lock:
+                        if room_name in chat_rooms:
+                            error="Room already exists"
+                        
+                        elif status_list[uname]!="AVAL":
+                            error="You cannot create a room currently"
+                            
+                        else:
+                            chat_rooms[room_name]={"owner":uname,"members":[uname]}
+                            user_rooms[uname]=room_name
+                            status_list[uname]="BUSY"
+                            can_create_room=True
+                        
+                if error:
+                    send_msg(conn,cipher,f"ERROR|{error}")
+                    
+                elif can_create_room:
+                    send_msg(conn,cipher,f"OK|Room:{room_name} created")
+                    print(f"[SERVER] {uname} created room {room_name}")
+               
+            #JOINING ROOM     
+            elif msg.startswith("JOINROOM|"):
+                room_name=msg[9:].strip()
+                error=None
+                can_join_room=False
+                
+                if not room_name:
+                    error="Room name not specified"
+                    
+                else:
+                    with lock:
+                        if room_name not in chat_rooms:
+                            error="Room does not exist"
+                        
+                        elif status_list[uname]!="AVAL":
+                            error="You cannot create a room currently"
+                            
+                        else:
+                            chat_rooms[room_name]["members"].append(uname)
+                            user_rooms[uname]=room_name
+                            status_list[uname]="BUSY"
+                            can_join_room=True
+                            
+                if error:
+                    send_msg(conn,cipher,f"ERROR|{error}")
+                    
+                elif can_join_room:
+                    send_msg(conn,cipher,f"OK|Joined room {room_name}")
+                    
+                    with lock:
+                        members=list(chat_rooms[room_name]["members"])
+                        for member in members:
+                            try:
+                                member_conn,member_cipher=client_list[member]
+                                send_msg(member_conn,member_cipher,f"BROADCAST|{uname} joined the room")
+                            except (KeyError,OSError):
+                                pass
+                                
+                        print(f"{uname} joined room {room_name}")
+            
+            #LEAVING ROOM            
+            elif msg.startswith("LEAVEROOM|"):
+                error=None
+                can_leave_room=False
+                
+                with lock:
+                    if uname not in user_rooms:
+                        error=f"{uname} not in a room"
+                        
+                    else:
+                        room_name=user_rooms.pop(uname)
+                        chat_rooms[room_name]["members"].remove(uname)
+                        status_list[uname]="AVAL"
+                        
+                        if not chat_rooms[room_name]["members"]:
+                            del chat_rooms[room_name]
+                            room_name=None
+                            
+                        elif chat_rooms[room_name]["owner"]==uname:
+                            chat_rooms[room_name]["owner"]=chat_rooms[room_name]["members"][0]
+                            
+                        can_leave_room=True
+                        
+                if error:
+                    send_msg(conn,cipher,f"ERROR|{error}")
+                    
+                elif can_leave_room:
+                    send_msg(conn,cipher,f"OK|You left the room")
+                    if room_name:
+                        members=list(chat_rooms[room_name]["members"])
+                        for member in members:
+                            try:
+                                member_conn,member_cipher=client_list[member]
+                                send_msg(member_conn,member_cipher,f"BROADCAST|{uname} left the room")
+                            except (OSError,KeyError):
+                                pass
+                        print(f"{uname} left room {room_name}")
+                            
             #SENDING MESSAGE
             elif msg.startswith("SEND|"):
                 with lock:
-                    partner=connection_list.get(uname)
-                    partner_data=client_list.get(partner) if partner else None
-                if partner_data:
+                    if uname in user_rooms:
+                        room_name=user_rooms[uname]
+                        members=list(chat_rooms[room_name]["members"])
+                        partner=None
+                        is_in_room=True
+                        
+                    else:  
+                        partner=connection_list.get(uname)
+                        partner_data=client_list.get(partner) if partner else None
+                        
+                if is_in_room:
+                    for member in members:
+                        if member!=uname:
+                            try:
+                                member_conn,member_cipher=client_list[member]
+                                send_msg(member_conn,member_cipher,f"BROADCAST|{uname}:{msg[5:]}")
+                            except (OSError,KeyError):
+                                pass
+                            
+                elif partner_data:
                     try:
-                        other_client,other_cipher=partner_data
-                        send_msg(other_client,other_cipher,msg)
-                    except (KeyError,OSError):
+                        partner_conn,partner_cipher=partner_data
+                        send_msg(partner_conn,partner_cipher,msg)
+                    except (OSError,KeyError):
                         pass
 
     finally:
@@ -301,6 +454,9 @@ client_list={}
 connection_list={}
 status_list={}
 pending_list={}
+chat_rooms={}
+user_rooms={}
+
 
 server=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
 server.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
@@ -311,5 +467,5 @@ print("[SERVER] Server listening on port 5100")
 while True:
     conn, addr=server.accept()
     print(f"[SERVER] new connection from {addr}")
-    thread_master_func=threading.Thread(target=master_func,args=(conn, client_list, connection_list,status_list,pending_list),daemon=True)
+    thread_master_func=threading.Thread(target=master_func,args=(conn, client_list, connection_list,status_list,pending_list,chat_rooms,user_rooms),daemon=True)
     thread_master_func.start()

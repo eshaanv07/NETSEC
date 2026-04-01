@@ -1,0 +1,61 @@
+            elif msg.startswith("BROADCAST|"):
+                for user,tuple in client_list.items():
+                    other_client,other_cipher=tuple[0],tuple[1]
+                    send_msg(other_client,other_cipher,msg)
+                    
+            elif msg.startswith("ROOMREQ|"):
+                msg=msg[8:]
+                requested_users=msg.split('|')
+                error=None
+                proceed=True
+                can_roomreq=False
+                
+                if len(requested_users)==len(set(requested_users)):
+                        error="No duplicates allowed"
+                        proceed=False
+                
+                for temp in requested_users:
+                    
+                    if proceed==False:
+                        break
+                    
+                    elif not temp:
+                        error="Not enough users/Syntax issue"
+                        proceed=False
+
+                    
+                    elif temp==uname:
+                        error="You are included by default"
+                        proceed=False
+                    
+                    else:
+                        with lock:
+                            if temp not in client_list:
+                                error="User no online"
+                                proceed=False
+                                
+                            elif status_list[temp]=="DND":
+                                error="User set to Do Not Disturb"
+                                proceed=False
+                            
+                            elif status_list[temp]=="BUSY":
+                                error="User set to BUSY"
+                                proceed=False
+                                
+                            elif status_list[temp]=="PENDING":
+                                error="User has a pending request"
+                                proceed=False
+                                
+                            elif status_list[uname]!="AVAL":
+                                error="You cannot make requests currently"
+                                proceed=False
+                                
+                            else:
+                                proceed=True
+                                
+                if proceed==True:
+                    status_list[uname]="ROOMPENDING"
+                    can_roomreq=True
+                
+                    
+                  

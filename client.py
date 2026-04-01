@@ -81,12 +81,23 @@ def recv_loop(client,cipher):
             elif msg.startswith("SEND|"):
                 print_msg(f"Partner: {msg[5:]}")
 
-            elif msg.startswith("SHOWANS|"):
-                users=json.loads(msg[8:])
+            elif msg.startswith("SHOWANSUSER|"):
+                users=json.loads(msg[12:])
                 print("\nOnline Users:")
                 for user,status in users.items():
                     print(f"{user} : {status}")
                 print("──────────────────")
+                
+            elif msg.startswith("SHOWANSROOM|"):
+                rooms=json.loads(msg[12:])
+                if not rooms:
+                    print_msg("No active rooms")
+                else:
+                    print("\rActive Rooms:")
+                    for room_name,room_data in rooms.items():
+                        print(f"{room_name} | Owner: {room_data['owner']} | Members: {', '.join(room_data['members'])}")
+                    print("──────────────────")
+                    print("\r> ", end="", flush=True)
 
             elif msg.startswith("REQ|"):
                 print_msg(f"[Request] {msg[4:]}\n")
@@ -106,6 +117,9 @@ def recv_loop(client,cipher):
                 
             elif msg.startswith("ERROR|"):
                 print_msg(f"[ERROR] {msg[6:]}\n")
+                
+            elif msg.startswith("BROADCAST|"):
+                print_msg(f"[BROADCAST] {msg[10:]}")
 
             else:
                 print_msg(f"[DEBUG] {msg}")
@@ -151,7 +165,7 @@ while True:
     if msg.startswith("EXIT|"):
         send_msg(client,cipher,msg)
         break
-    elif any(msg.startswith(p) for p in ("ENDCONN|","SHOW|","STAT|","REQ|","ACCEPT|","REJECT|")):
+    elif any(msg.startswith(p) for p in ("ENDCONN|","SHOW|","STAT|","REQ|","ACCEPT|","REJECT|","BROADCAST|","CREATEROOM|","JOINROOM|","LEAVEROOM|")):
         send_msg(client,cipher,msg)
     else:
         send_msg(client,cipher,"SEND|"+msg)
